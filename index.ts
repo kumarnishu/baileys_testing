@@ -1,4 +1,4 @@
-import makeWASocket, { AnyMessageContent, DisconnectReason, WAMessageContent, WAMessageKey, delay, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, makeInMemoryStore, useMultiFileAuthState } from "@whiskeysockets/baileys"
+import makeWASocket, { AnyMessageContent, delay, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, makeInMemoryStore, useMultiFileAuthState } from "@whiskeysockets/baileys"
 import P from "pino"
 import NodeCache from 'node-cache'
 
@@ -7,10 +7,10 @@ const logger = P({ timestamp: () => `,"time":"${new Date().toJSON()}"` })
 
 const useStore = !process.argv.includes('--no-store')
 const doReplies = !process.argv.includes('--no-reply')
-const usePairingCode = process.argv.includes('--use-pairing-code')
-const useMobile = process.argv.includes('--mobile')
+
 
 const msgRetryCounterCache = new NodeCache()
+
 
 // can be written out to a file & read from it
 const store = useStore ? makeInMemoryStore({ logger }) : undefined
@@ -21,12 +21,11 @@ setInterval(() => {
 }, 10_000)
 
 
-const startSock = async () => {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info')
+async function createSocket(session_folder: string) {
+    const { state, saveCreds } = await useMultiFileAuthState('sessions/' + session_folder)
     // fetch latest version of WA Web
     const { version, isLatest } = await fetchLatestBaileysVersion()
     console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
-
     const sock = makeWASocket({
         version,
         logger,
@@ -39,21 +38,14 @@ const startSock = async () => {
         msgRetryCounterCache,
         generateHighQualityLinkPreview: true
     })
-    store?.bind(sock.ev)
+    return { sock, saveCreds }
+}
 
 
-    const sendMessageWTyping = async (msg: AnyMessageContent, jid: string) => {
-        await sock.presenceSubscribe(jid)
-        await delay(500)
-
-        await sock.sendPresenceUpdate('composing', jid)
-        await delay(2000)
-
-        await sock.sendPresenceUpdate('paused', jid)
-
-        await sock.sendMessage(jid, msg)
-    }
-    sock.ev.process(
+async function HandleSocket(session_id: string) {
+    const socket = await createSocket(session_id)
+    store?.bind(socket.sock.ev)
+    socket.sock.ev.process(
         // events is a map for event name => event data
         async (events) => {
             // something about the connection changed
@@ -67,7 +59,7 @@ const startSock = async () => {
                     console.log(lastDisconnect?.error?.name)
                     console.log(lastDisconnect?.error?.stack)
                     if (lastDisconnect?.error) {
-                        startSock()
+                        HandleSocket(session_id)
                     } else {
                         console.log('Connection closed. You are logged out.')
                     }
@@ -78,7 +70,7 @@ const startSock = async () => {
 
             // credentials updated -- save them
             if (events['creds.update']) {
-                await saveCreds()
+                await socket.saveCreds()
             }
 
             if (events['labels.association']) {
@@ -110,69 +102,46 @@ const startSock = async () => {
                         let id = msg.key.remoteJid!
                         if (!msg.key.fromMe && doReplies) {
                             console.log('replying to', msg.key.remoteJid)
-                            await sock!.readMessages([msg.key])
-                            await sendMessageWTyping({ text: 'Hello there!' }, msg.key.remoteJid!)
-                            // send a link
-                            await sock.sendMessage(id, { text: 'Hi, this was sent using https://github.com/adiwajshing/baileys' })
-                            await sock.sendMessage(id, {
-                                document: { url: "https://ik.imagekit.io/ghzlr9kj8/Agarson_Folder.pdf?updatedAt=1688643310063" },
-                                fileName: "agarson catalouge",
-                                caption: "download Catalouge",
-                                mimetype: 'application/pdf'
-                            })
-                            await sock.sendMessage(
-                                id,
-                                { location: { degreesLatitude: 24.121231, degreesLongitude: 55.1121221 } }
-                            )
-                            const vcard = 'BEGIN:VCARD\n' // metadata of the contact card
-                                + 'VERSION:3.0\n'
-                                + 'FN:Jeff Singh\n' // full name
-                                + 'ORG:Ashoka Uni;\n' // the organization of the contact
-                                + 'TEL;type=CELL;type=VOICE;waid=911234567890:+91 12345 67890\n' // WhatsApp ID + phone number
-                                + 'END:VCARD'
-                            const sentMsg = await sock.sendMessage(
-                                id,
-                                {
-                                    contacts: {
-                                        displayName: 'Jeff',
-                                        contacts: [{ vcard }]
-                                    }
-                                }
-                            )
-                            const sections = [
-                                {
-                                    title: "Section 1",
-                                    rows: [
-                                        { title: "Option 1", rowId: "option1" },
-                                        { title: "Option 2", rowId: "option2", description: "This is a description" }
-                                    ]
-                                },
-                                {
-                                    title: "Section 2",
-                                    rows: [
-                                        { title: "Option 3", rowId: "option3" },
-                                        { title: "Option 4", rowId: "option4", description: "This is a description V2" }
-                                    ]
-                                },
-                            ]
+                            await socket.sock!.readMessages([msg.key])
+                            await sendMessageWTyping({ text: `Hello there! i am from session id ${session_id}` }, msg.key.remoteJid!)
+                            // // send a link
+                            // await sock.sendMessage(id, { text: 'Hi, this was sent using https://github.com/adiwajshing/baileys' })
+                            // await socket.sock.sendMessage(id, {
+                            //     video: { url: "https://www.w3schools.com/tags/movie.mp4" },
+                            //     fileName: "agarson catalouge",
+                            //     caption: "download Catalouge",
+                            // })
+                            // await sock.sendMessage(
+                            //     id,
+                            //     { location: { degreesLatitude: 24.121231, degreesLongitude: 55.1121221 } }
+                            // )
+                            // const vcard = 'BEGIN:VCARD\n' // metadata of the contact card
+                            //     + 'VERSION:3.0\n'
+                            //     + 'FN:Jeff Singh\n' // full name
+                            //     + 'ORG:Ashoka Uni;\n' // the organization of the contact
+                            //     + 'TEL;type=CELL;type=VOICE;waid=911234567890:+91 12345 67890\n' // WhatsApp ID + phone number
+                            //     + 'END:VCARD'
+                            // const sentMsg = await sock.sendMessage(
+                            //     id,
+                            //     {
+                            //         contacts: {
+                            //             displayName: 'Jeff',
+                            //             contacts: [{ vcard }]
+                            //         }
+                            //     }
+                            // )
 
-                            const listMessage = {
-                                text: "This is a list",
-                                footer: "nice footer, link: https://google.com",
-                                title: "Amazing boldfaced list title",
-                                buttonText: "Required, text on the button to view the list",
-                                sections
-                            }
 
-                            await sock.sendMessage(id, listMessage)
-                            const reactionMessage = {
-                                react: {
-                                    text: "💖", // use an empty string to remove the reaction
-                                    key: msg.key
-                                }
-                            }
 
-                            const sendMsg = await sock.sendMessage(id, reactionMessage)
+
+                            // const reactionMessage = {
+                            //     react: {
+                            //         text: "💖", // use an empty string to remove the reaction
+                            //         key: msg.key
+                            //     }
+                            // }
+
+                            // const sendMsg = await sock.sendMessage(id, reactionMessage)
                         }
                     }
                 }
@@ -205,7 +174,7 @@ const startSock = async () => {
                         if (typeof contact.imgUrl !== 'undefined') {
                             const newUrl = contact.imgUrl === null
                                 ? null
-                                : await sock!.profilePictureUrl(contact.id!).catch(() => null)
+                                : await socket.sock!.profilePictureUrl(contact.id!).catch(() => null)
                             console.log(
                                 `contact ${contact.id} has a new profile pic: ${newUrl}`,
                             )
@@ -219,6 +188,19 @@ const startSock = async () => {
             }
         }
     )
-    return sock
+    const sendMessageWTyping = async (msg: AnyMessageContent, jid: string) => {
+        await socket.sock.presenceSubscribe(jid)
+        await delay(500)
+
+        await socket.sock.sendPresenceUpdate('composing', jid)
+        await delay(2000)
+
+        await socket.sock.sendPresenceUpdate('paused', jid)
+
+        await socket.sock.sendMessage(jid, msg)
+    }
 }
-startSock()
+
+
+HandleSocket("nishu1")
+HandleSocket("nishu2")
